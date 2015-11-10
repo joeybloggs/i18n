@@ -167,29 +167,52 @@ type currency struct {
 }
 
 // load unmarshalls rule data from yaml files into the translator's rules
-func (t *TranslatorRules) load(files []string) (errors []error) {
+func (t *TranslatorRules) load(f *TranslatorFactory, files []string) (errors []error) {
 
 	for _, file := range files {
+
+		if f.isUsingExistingFiles {
+
+			contents, ok := f.ruleFiles[file]
+			if !ok {
+				errors = append(errors, translatorError{message: "can't open rules file: " + file + " could not be found."})
+			}
+
+			errs := t.loadContents(contents)
+			if len(errs) > 0 {
+				errors = append(errors, errs...)
+			}
+
+			continue
+		}
+
 		_, statErr := os.Stat(file)
-		if statErr == nil {
-			contents, readErr := ioutil.ReadFile(file)
+		if statErr != nil {
+			continue
+		}
 
-			if readErr != nil {
-				errors = append(errors, translatorError{message: "can't open rules file: " + readErr.Error()})
-			}
+		contents, readErr := ioutil.ReadFile(file)
 
-			tNew := new(TranslatorRules)
-			yamlErr := yaml.Unmarshal(contents, tNew)
+		if readErr != nil {
+			errors = append(errors, translatorError{message: "can't open rules file: " + readErr.Error()})
+		}
 
-			if yamlErr != nil {
-				errors = append(errors, translatorError{message: "can't load rules YAML: " + yamlErr.Error()})
-			} else {
-				t.merge(tNew)
-			}
+		errs := t.loadContents(contents)
+		if len(errs) > 0 {
+			errors = append(errors, errs...)
 		}
 	}
 
-	// set the plural rule func
+	errs := t.setPlurals()
+	if len(errs) > 0 {
+		errors = append(errors, errs...)
+	}
+
+	return
+}
+
+func (t *TranslatorRules) setPlurals() (errors []error) {
+
 	pRule, ok := pluralRules[t.Plural]
 	if ok {
 		t.PluralRuleFunc = pRule
@@ -210,6 +233,43 @@ func (t *TranslatorRules) load(files []string) (errors []error) {
 		errors = append(errors, translatorError{message: "invalid direction rule: " + t.Direction})
 		t.Direction = direction_ltr
 	}
+
+	return
+}
+
+// loadContents unmarshalls rule data from yaml files into the translator's rules
+func (t *TranslatorRules) loadContents(contents []byte) (errors []error) {
+
+	tNew := new(TranslatorRules)
+	yamlErr := yaml.Unmarshal(contents, tNew)
+
+	if yamlErr != nil {
+		errors = append(errors, translatorError{message: "can't load rules YAML: " + yamlErr.Error()})
+	} else {
+		t.merge(tNew)
+	}
+
+	// // set the plural rule func
+	// pRule, ok := pluralRules[t.Plural]
+	// if ok {
+	// 	t.PluralRuleFunc = pRule
+	// } else {
+	// 	if t.Plural == "" {
+	// 		errors = append(errors, translatorError{message: "missing plural rule: " + t.Plural})
+
+	// 	} else {
+	// 		errors = append(errors, translatorError{message: "invalid plural rule: " + t.Plural})
+	// 	}
+	// 	t.PluralRuleFunc = pluralRules["1"]
+	// }
+
+	// if t.Direction == "" {
+	// 	errors = append(errors, translatorError{message: "missing direction rule"})
+	// 	t.Direction = direction_ltr
+	// } else if t.Direction != direction_ltr && t.Direction != direction_rtl {
+	// 	errors = append(errors, translatorError{message: "invalid direction rule: " + t.Direction})
+	// 	t.Direction = direction_ltr
+	// }
 
 	return
 }

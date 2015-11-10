@@ -9,10 +9,10 @@ import (
 func (s *MySuite) TestLoad(c *C) {
 	t := new(TranslatorRules)
 
-	errs := t.load([]string{"does/not/exist/xx.yaml"})
+	errs := t.load(&TranslatorFactory{}, []string{"does/not/exist/xx.yaml"})
 	c.Check(errs, Not(HasLen), 0)
 
-	errs = t.load([]string{"data/rules/root.yaml", s.rulesDir + "/en.yaml"})
+	errs = t.load(&TranslatorFactory{}, []string{"data/rules/root.yaml", s.rulesDir + "/en.yaml"})
 	c.Check(errs, HasLen, 0)
 	c.Check(t.Currencies, Not(HasLen), 0)
 	c.Check(t.Currencies["USD"].Symbol, Equals, "US$")
@@ -52,7 +52,7 @@ func (s *MySuite) TestLoad(c *C) {
 
 	for _, l := range locales {
 		t := new(TranslatorRules)
-		errs = t.load([]string{"data/rules/" + l + ".yaml"})
+		errs = t.load(&TranslatorFactory{}, []string{"data/rules/" + l + ".yaml"})
 		c.Check(errs, HasLen, 0)
 	}
 
@@ -67,7 +67,7 @@ func (s *MySuite) TestLoad(c *C) {
 
 	for _, l := range locales {
 		t := new(TranslatorRules)
-		errs = t.load([]string{"data/rules/" + l + ".yaml"})
+		errs = t.load(&TranslatorFactory{}, []string{"data/rules/" + l + ".yaml"})
 		c.Log(l)
 		c.Check(errs, HasLen, 1)
 	}

@@ -2,9 +2,9 @@ package i18n
 
 import (
 	// standard library
+
 	"io/ioutil"
 	"os"
-	"path"
 	"path/filepath"
 	"strings"
 
@@ -17,11 +17,22 @@ import (
 // Because of this caching, you can request a Translator for a specific locale
 // multiple times and always get a pointer to the same Translator instance.
 type TranslatorFactory struct {
-	messagesPaths []string
-	rulesPaths    []string
-	translators   map[string]*Translator
-	fallback      *Translator
+	messagesPaths        []string
+	rulesPaths           []string
+	translators          map[string]*Translator
+	fallback             *Translator
+	isUsingExistingFiles bool
+	rulesPath            string
+	messagesPath         string
+	ruleFiles            map[string][]byte
+	messageFiles         map[string][]byte
 }
+
+// type Config struct {
+// 	MessagesPaths  []string
+// 	RulesPaths     []string
+// 	FallbackLocale *Translator
+// }
 
 // Translator is a struct which contains all the rules and messages necessary
 // to do internationalization for a specific locale. Most functionality in this
@@ -45,8 +56,9 @@ type translatorError struct {
 var pathSeparator string
 
 func init() {
-	p := path.Join("a", "b")
-	pathSeparator = p[1 : len(p)-1]
+	pathSeparator = string(os.PathSeparator)
+	// p := path.Join("a", "b")
+	// pathSeparator = p[1 : len(p)-1]
 }
 
 // Error satisfies the error interface requirements
@@ -55,6 +67,82 @@ func (e translatorError) Error() string {
 		return "translator error (locale: " + e.translator.locale + ") - " + e.message
 	}
 	return "translator error - " + e.message
+}
+
+// NewTranslatorFactoryExitingFiles returns a TranslatorFactory instance with the specified
+// paths and fallback locale.  If a fallback locale is specified, it
+// automatically creates the fallback Translator instance. Several errors can
+// occur during this process, and those are all returned in the errors slice.
+// Even if errors are returned, this function should still return a working
+// Translator if the fallback works.
+func NewTranslatorFactoryExitingFiles(rulesPath string, rules map[string][]byte, messagesPath string, messages map[string][]byte, fallbackLocale string) (*TranslatorFactory, []error) {
+
+	var errors []error
+	rulesPath = filepath.Clean(rulesPath)
+	messagesPath = filepath.Clean(messagesPath)
+
+	if len(rulesPath) == 0 {
+		errors = append(errors, translatorError{message: "rules paths empty"})
+	}
+
+	if len(messagesPath) == 0 {
+		errors = append(errors, translatorError{message: "messages paths empty"})
+	}
+
+	foundRules := fallbackLocale == ""
+	foundMessages := fallbackLocale == ""
+
+	if len(rules) == 0 {
+		errors = append(errors, translatorError{message: "can't read rules path " + rulesPath + ": no rules found"})
+	}
+
+	_, foundRules = rules[rulesPath+pathSeparator+fallbackLocale+".yaml"]
+
+	if len(messages) == 0 {
+		errors = append(errors, translatorError{message: "can't read messages path " + messagesPath + ": no messages found"})
+	}
+
+	_, foundMessages = messages[messagesPath+pathSeparator+fallbackLocale+".yaml"]
+
+	if !foundRules {
+		errors = append(errors, translatorError{message: "found no rules for fallback locale"})
+	}
+
+	if !foundMessages {
+		pf := messagesPath + pathSeparator + fallbackLocale
+
+		for k := range messages {
+
+			if filepath.HasPrefix(k, pf) {
+				foundMessages = true
+				break
+			}
+		}
+	}
+
+	if !foundMessages {
+		errors = append(errors, translatorError{message: "found no messages for fallback locale"})
+	}
+
+	f := &TranslatorFactory{
+		rulesPath:            rulesPath,
+		messagesPath:         messagesPath,
+		ruleFiles:            rules,
+		messageFiles:         messages,
+		isUsingExistingFiles: true,
+		translators:          map[string]*Translator{},
+	}
+
+	// load and check the fallback locale
+	if fallbackLocale != "" {
+		var errs []error
+		f.fallback, errs = f.GetTranslator(fallbackLocale)
+		for _, err := range errs {
+			errors = append(errors, err)
+		}
+	}
+
+	return f, errors
 }
 
 // NewTranslatorFactory returns a TranslatorFactory instance with the specified
@@ -182,61 +270,90 @@ func (f *TranslatorFactory) GetTranslator(localeCode string) (t *Translator, err
 	}
 
 	exists, errs := f.LocaleExists(localeCode)
+
 	if !exists {
 		errors = append(errors, translatorError{message: "could not find rules and messages for locale " + localeCode})
 	}
+
 	for _, e := range errs {
 		errors = append(errors, e)
 	}
 
 	rules := new(TranslatorRules)
+	messagePaths := []string{}
 	files := []string{}
 
-	// TODO: the rules loading logic is fairly complex, and there are some
-	// specific cases we are not testing for yet. We need to test that the
-	// fallback locale rules do not influence the rules loaded, and that the
-	// base rules do.
+	if f.isUsingExistingFiles {
 
-	// the load the base (default) rule values
-	// the step above
-	for _, p := range f.rulesPaths {
-		p = strings.TrimRight(p, pathSeparator)
-		files = append(files, p+pathSeparator+"root.yaml")
-	}
+		prefix := f.rulesPath + pathSeparator
+		files = append(files, prefix+"root.yaml")
 
-	// load less specific fallback locale rules
-	parts := strings.Split(localeCode, "-")
-	if len(parts) > 1 {
-		for i, _ := range parts {
-			fb := strings.Join(parts[0:i+1], "-")
-			for _, p := range f.rulesPaths {
-				p = strings.TrimRight(p, pathSeparator)
-				files = append(files, p+pathSeparator+fb+".yaml")
+		// load less specific fallback locale rules
+		parts := strings.Split(localeCode, "-")
+		if len(parts) > 1 {
+			for i := range parts {
+				fb := strings.Join(parts[0:i+1], "-")
+				files = append(files, prefix+fb+".yaml")
 			}
 		}
+
+		// finally load files for this specific locale
+		files = append(files, prefix+localeCode+".yaml")
+
+		messagePaths = append(messagePaths, f.messagesPath)
+
+	} else {
+
+		// TODO: the rules loading logic is fairly complex, and there are some
+		// specific cases we are not testing for yet. We need to test that the
+		// fallback locale rules do not influence the rules loaded, and that the
+		// base rules do.
+
+		// the load the base (default) rule values
+		// the step above
+		for _, p := range f.rulesPaths {
+			p = strings.TrimRight(p, pathSeparator)
+			files = append(files, p+pathSeparator+"root.yaml")
+		}
+
+		// load less specific fallback locale rules
+		parts := strings.Split(localeCode, "-")
+		if len(parts) > 1 {
+			for i := range parts {
+				fb := strings.Join(parts[0:i+1], "-")
+				for _, p := range f.rulesPaths {
+					p = strings.TrimRight(p, pathSeparator)
+					files = append(files, p+pathSeparator+fb+".yaml")
+				}
+			}
+		}
+
+		// finally load files for this specific locale
+		for _, p := range f.rulesPaths {
+			p = strings.TrimRight(p, pathSeparator)
+			files = append(files, p+pathSeparator+localeCode+".yaml")
+		}
+
+		messagePaths = f.messagesPaths
 	}
 
-	// finally load files for this specific locale
-	for _, p := range f.rulesPaths {
-		p = strings.TrimRight(p, pathSeparator)
-		files = append(files, p+pathSeparator+localeCode+".yaml")
-	}
-
-	errs = rules.load(files)
+	errs = rules.load(f, files)
 	for _, err := range errs {
 		errors = append(errors, err)
 	}
 
-	messages, errs := loadMessages(localeCode, f.messagesPaths)
+	messages, errs := loadMessages(f, localeCode, messagePaths)
+
 	for _, err := range errs {
 		errors = append(errors, err)
 	}
 
-	t = new(Translator)
-	t.locale = localeCode
-	t.messages = messages
-	t.fallback = fallback
-	t.rules = rules
+	t = &Translator{
+		locale:   localeCode,
+		messages: messages,
+		fallback: fallback,
+		rules:    rules,
+	}
 
 	f.translators[localeCode] = t
 
@@ -276,6 +393,26 @@ func (f *TranslatorFactory) getFallback(localeCode string) *Translator {
 // LocaleExists checks to see if any messages files exist for the requested
 // locale string.
 func (f *TranslatorFactory) LocaleExists(localeCode string) (exists bool, errs []error) {
+
+	if f.isUsingExistingFiles {
+
+		_, exists = f.messageFiles[f.messagesPath+pathSeparator+localeCode+".yaml"]
+
+		prefix := f.messagesPath + pathSeparator + localeCode + pathSeparator
+
+		for k := range f.messageFiles {
+			if filepath.HasPrefix(k, prefix) {
+				exists = true
+			}
+		}
+
+		if !exists {
+			errs = append(errs, translatorError{message: "error getting file info: " + prefix + "*.yaml"})
+		}
+
+		return
+	}
+
 	for _, p := range f.messagesPaths {
 		p = strings.TrimRight(p, pathSeparator)
 		_, err := os.Stat(p + pathSeparator + localeCode + ".yaml")
@@ -360,10 +497,7 @@ func (t *Translator) Pluralize(key string, number float64, numberStr string) (tr
 	return
 }
 
-// Translate returns the translated message, performang any substitutions
-// requested in the substitutions map. If neither this translator nor its
-// fallback translator (or the fallback's fallback and so on) have a translation
-// for the requested key, and empty string and an error will be returned.
+// Rules returns the translator rules
 func (t *Translator) Rules() TranslatorRules {
 
 	rules := *t.rules
@@ -395,44 +529,65 @@ func (t *Translator) substitute(str string, substitutions map[string]string) (su
 // loadMessages loads all messages from the properly named locale message yaml
 // files in the requested messagesPaths.  if multiple paths are provided, paths
 // further down the list take precedence over earlier paths.
-func loadMessages(locale string, messagesPaths []string) (messages map[string]string, errors []error) {
+func loadMessages(f *TranslatorFactory, locale string, messagesPaths []string) (messages map[string]string, errors []error) {
 
 	messages = make(map[string]string)
 
 	found := false
-	for _, p := range messagesPaths {
-		p = strings.TrimRight(p, pathSeparator)
-		file := p + pathSeparator + locale + ".yaml"
 
-		_, statErr := os.Stat(file)
-		if statErr == nil {
-			contents, readErr := ioutil.ReadFile(file)
-			if readErr != nil {
-				errors = append(errors, translatorError{message: "can't open messages file: " + readErr.Error()})
+	if f.isUsingExistingFiles {
+
+		prefix := messagesPaths[0] + pathSeparator + locale
+		rootFile := prefix + ".yaml"
+
+		var contents []byte
+		contents, found = f.messageFiles[rootFile]
+
+		if found {
+
+			newmap := map[string]string{}
+			yamlErr := yaml.Unmarshal(contents, &newmap)
+
+			if yamlErr != nil {
+				errors = append(errors, translatorError{message: "can't load messages YAML: " + yamlErr.Error()})
 			} else {
-				newmap := map[string]string{}
-				yamlErr := yaml.Unmarshal(contents, &newmap)
-				if yamlErr != nil {
-					errors = append(errors, translatorError{message: "can't load messages YAML: " + yamlErr.Error()})
-				} else {
-					found = true
-					for key, value := range newmap {
-						messages[key] = value
+				found = true
+
+				for key, value := range newmap {
+					messages[key] = value
+				}
+			}
+		} else {
+
+			prefix = prefix + pathSeparator
+
+			for k, contents := range f.messageFiles {
+
+				if filepath.HasPrefix(k, prefix) && k[len(k)-5:] == ".yaml" {
+
+					newmap := map[string]string{}
+					yamlErr := yaml.Unmarshal(contents, &newmap)
+					if yamlErr != nil {
+						errors = append(errors, translatorError{message: "can't load messages YAML: " + k})
+					} else {
+						found = true
+						for key, value := range newmap {
+							messages[key] = value
+						}
 					}
 				}
 			}
 		}
 
-		// now look for a directory named after this locale and get an *.yaml children
-		dir := p + pathSeparator + locale
-		info, statErr := os.Stat(dir)
-		if statErr == nil && info.IsDir() {
-			// found the directory - now look for *.yaml files
-			files, globErr := filepath.Glob(dir + pathSeparator + "*.yaml")
-			if globErr != nil {
-				errors = append(errors, translatorError{message: "can't glob messages files: " + globErr.Error()})
-			}
-			for _, file := range files {
+	} else {
+
+		for _, p := range messagesPaths {
+
+			p = strings.TrimRight(p, pathSeparator)
+			file := p + pathSeparator + locale + ".yaml"
+
+			_, statErr := os.Stat(file)
+			if statErr == nil {
 				contents, readErr := ioutil.ReadFile(file)
 				if readErr != nil {
 					errors = append(errors, translatorError{message: "can't open messages file: " + readErr.Error()})
@@ -445,6 +600,35 @@ func loadMessages(locale string, messagesPaths []string) (messages map[string]st
 						found = true
 						for key, value := range newmap {
 							messages[key] = value
+						}
+					}
+				}
+			}
+
+			// now look for a directory named after this locale and get an *.yaml children
+			dir := p + pathSeparator + locale
+			info, statErr := os.Stat(dir)
+
+			if statErr == nil && info.IsDir() {
+				// found the directory - now look for *.yaml files
+				files, globErr := filepath.Glob(dir + pathSeparator + "*.yaml")
+				if globErr != nil {
+					errors = append(errors, translatorError{message: "can't glob messages files: " + globErr.Error()})
+				}
+				for _, file := range files {
+					contents, readErr := ioutil.ReadFile(file)
+					if readErr != nil {
+						errors = append(errors, translatorError{message: "can't open messages file: " + readErr.Error()})
+					} else {
+						newmap := map[string]string{}
+						yamlErr := yaml.Unmarshal(contents, &newmap)
+						if yamlErr != nil {
+							errors = append(errors, translatorError{message: "can't load messages YAML: " + yamlErr.Error()})
+						} else {
+							found = true
+							for key, value := range newmap {
+								messages[key] = value
+							}
 						}
 					}
 				}

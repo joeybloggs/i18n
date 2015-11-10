@@ -480,13 +480,13 @@ func (s *MySuite) TestSubstitute(c *C) {
 }
 
 func (s *MySuite) TestLoadMessages(c *C) {
-	messages, errors := loadMessages("en", []string{"data/messages", s.messagesDir})
+	messages, errors := loadMessages(&TranslatorFactory{}, "en", []string{"data/messages", s.messagesDir})
 	c.Check(errors, HasLen, 0)
 	c.Check(messages["TIME_UNIT_DAY"], Equals, "{n} day|{n} days")
 	c.Check(messages["WELCOME"], Equals, "Howdy!")
 	c.Check(messages["GOODBYE"], Equals, "So long!")
 
-	messages, errors = loadMessages("xx", []string{"does/not/exist"})
+	messages, errors = loadMessages(&TranslatorFactory{}, "xx", []string{"does/not/exist"})
 	c.Check(errors, Not(HasLen), 0)
 	c.Check(messages, HasLen, 0)
 }
